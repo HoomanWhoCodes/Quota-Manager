@@ -34,6 +34,10 @@ class User(AbstractUser):
         ]
 
     @property
+    def is_employee(self):
+        return self.role == self.Role.EMPLOYEE
+
+    @property
     def is_manager(self):
         return self.role == self.Role.MANAGER
 
