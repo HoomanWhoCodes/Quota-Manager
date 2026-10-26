@@ -5,6 +5,7 @@ Values that differ per machine or are secret come from environment variables
 (loaded from `.env` if present). See `.env.example`.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -44,8 +45,16 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 AUTH_USER_MODEL = "accounts.User"
 
+# JWT: signed with SECRET_KEY, sent as "Authorization: Bearer <access token>"
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("JWT_ACCESS_MINUTES", default=15)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("JWT_REFRESH_DAYS", default=1)),
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.TokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [

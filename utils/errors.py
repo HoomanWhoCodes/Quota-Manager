@@ -40,11 +40,14 @@ def exception_handler(exc, context):
     if response is None:
         return None
 
-    code = next((c for cls, c in DRF_CODES if isinstance(exc, cls)), "error")
+    # Django's Http404 has no default_code, so don't read it unless we must.
+    code = next((c for cls, c in DRF_CODES if isinstance(exc, cls)), None) or exc.default_code
     if isinstance(exc, exceptions.ValidationError):
         message, details = "Invalid input.", response.data
     elif code == "not_found":
         message, details = "Not found.", None
+    elif code == "not_authenticated" and not isinstance(exc.detail, str):
+        message, details = "Invalid or expired token.", None
     else:
         message, details = str(getattr(exc, "detail", exc)), None
 
