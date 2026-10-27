@@ -103,6 +103,10 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 
+# No redirect from /requests to /requests/. A redirect loses the body of a POST,
+# so a URL without the slash gets a plain 404 instead.
+APPEND_SLASH = False
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",

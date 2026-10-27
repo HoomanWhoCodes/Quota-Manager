@@ -1,3 +1,4 @@
+from django.http import JsonResponse
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
@@ -66,3 +67,12 @@ def exception_handler(exc, context):
     response.data = error_body(CODES.get(response.status_code, "error"), message, details)
     return response
 
+
+# Django calls these for errors outside DRF views (wrong URL, crash), so they
+# use the same error shape too.
+def not_found_view(request, exception=None):
+    return JsonResponse(error_body("not_found", "Not found."), status=404)
+
+
+def server_error_view(request):
+    return JsonResponse(error_body("server_error", "Something went wrong."), status=500)
