@@ -31,9 +31,5 @@ class Quota(models.Model):
         ]
 
     @property
-    def ceiling_minutes(self):
-        return QUOTA_CEILING_MINUTES
-
-    @property
     def remaining_minutes(self):
         return QUOTA_CEILING_MINUTES - self.consumed_minutes

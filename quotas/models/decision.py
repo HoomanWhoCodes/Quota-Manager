@@ -16,9 +16,6 @@ class DecisionOutcome(models.TextChoices):
 
 
 class Decision(models.Model):
-    Role = ReviewerRole
-    Outcome = DecisionOutcome
-
     request = models.ForeignKey(QuotaRequest, on_delete=models.PROTECT, related_name="decisions")
     role = models.CharField(max_length=16, choices=ReviewerRole.choices)
     actor = models.ForeignKey(

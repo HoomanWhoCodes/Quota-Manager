@@ -16,8 +16,6 @@ FINAL_EVENT_TYPES = [EventType.APPROVED, EventType.REJECTED]
 
 
 class RequestEvent(models.Model):
-    Type = EventType
-
     request = models.ForeignKey(QuotaRequest, on_delete=models.PROTECT, related_name="events")
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,

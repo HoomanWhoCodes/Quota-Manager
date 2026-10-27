@@ -13,8 +13,6 @@ class RequestStatus(models.TextChoices):
 
 
 class QuotaRequest(models.Model):
-    Status = RequestStatus
-
     employee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -54,7 +52,3 @@ class QuotaRequest(models.Model):
                 name="request_decided_at_matches_status",
             ),
         ]
-
-    @property
-    def is_terminal(self):
-        return self.status != RequestStatus.PENDING

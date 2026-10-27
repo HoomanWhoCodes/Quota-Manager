@@ -1,6 +1,18 @@
 from rest_framework import serializers
 
-from quotas.models import QUOTA_CEILING_MINUTES, Decision, DecisionOutcome, QuotaRequest, RequestStatus
+from quotas.models import QUOTA_CEILING_MINUTES, Decision, DecisionOutcome, Period, QuotaRequest, RequestStatus
+from utils import clock
+
+
+class PeriodSerializer(serializers.ModelSerializer):
+    is_open = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Period
+        fields = ["id", "name", "start_at", "end_at", "is_open"]
+
+    def get_is_open(self, period):
+        return clock.now() < period.end_at
 
 
 class QuotaRequestCreateSerializer(serializers.Serializer):
@@ -45,17 +57,3 @@ class QuotaRequestSerializer(serializers.ModelSerializer):
             "decided_at",
         ]
 
-
-class DecisionResultSerializer(serializers.Serializer):
-    def to_representation(self, decision):
-        return {
-            "decision": DecisionSerializer(decision).data,
-            "request": {"id": decision.request_id, "status": decision.request.status},
-        }
-
-
-class QuotaSummarySerializer(serializers.Serializer):
-    period_id = serializers.IntegerField()
-    ceiling_minutes = serializers.IntegerField()
-    consumed_minutes = serializers.IntegerField()
-    remaining_minutes = serializers.IntegerField()

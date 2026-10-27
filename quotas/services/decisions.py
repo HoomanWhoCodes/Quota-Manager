@@ -33,20 +33,18 @@ def decide(*, actor, request_id, outcome):
 
         # Someone who is not a reviewer gets 404, so they learn nothing
         # about whether the request exists.
-        role = _reviewer_role(actor)
-        if role is None:
+        if actor.role not in ReviewerRole.values:
             raise NotFound()
+        role = actor.role
 
         if request.status != RequestStatus.PENDING:
             raise InvalidState("This request is already finished.")
         if Decision.objects.filter(request=request, role=role).exists():
             raise InvalidState("Your role has already decided on this request.")
 
-        now = clock.now()
-
         if outcome == DecisionOutcome.REJECT:
             decision = _record_decision(request, role, actor, outcome)
-            _finish(request, RequestStatus.REJECTED, EventType.REJECTED, actor, now)
+            _finish(request, RequestStatus.REJECTED, EventType.REJECTED, actor)
             return decision
 
         other_role = ReviewerRole.HR if role == ReviewerRole.MANAGER else ReviewerRole.MANAGER
@@ -67,16 +65,8 @@ def decide(*, actor, request_id, outcome):
         quota.save(update_fields=["consumed_minutes", "updated_at"])
 
         decision = _record_decision(request, role, actor, outcome)
-        _finish(request, RequestStatus.APPROVED, EventType.APPROVED, actor, now)
+        _finish(request, RequestStatus.APPROVED, EventType.APPROVED, actor)
         return decision
-
-
-def _reviewer_role(user):
-    if user.is_manager:
-        return ReviewerRole.MANAGER
-    if user.is_hr:
-        return ReviewerRole.HR
-    return None
 
 
 def _record_decision(request, role, actor, outcome):
@@ -85,9 +75,9 @@ def _record_decision(request, role, actor, outcome):
     return decision
 
 
-def _finish(request, status, event_type, actor, now):
+def _finish(request, status, event_type, actor):
     request.status = status
-    request.decided_at = now
+    request.decided_at = clock.now()
     request.save(update_fields=["status", "decided_at", "updated_at"])
     RequestEvent.objects.create(request=request, actor=actor, event_type=event_type)
 
@@ -99,6 +89,4 @@ def _lock_quota(request):
         [Quota(employee_id=request.employee_id, period_id=request.period_id)],
         ignore_conflicts=True,
     )
-    return Quota.objects.select_for_update().get(
-        employee_id=request.employee_id, period_id=request.period_id
-    )
+    return Quota.objects.select_for_update().get(employee_id=request.employee_id, period_id=request.period_id)
