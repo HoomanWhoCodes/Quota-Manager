@@ -55,6 +55,18 @@ SIMPLE_JWT = {
 
 IDEMPOTENCY_KEY_TTL_HOURS = env.int("IDEMPOTENCY_KEY_TTL_HOURS", default=24)
 
+# Redis, shared by every app process. The rate limiter keeps its counters here.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env("REDIS_URL"),
+    }
+}
+
+# Requests per minute per user
+RATE_LIMIT_WRITE_PER_MINUTE = env.int("RATE_LIMIT_WRITE_PER_MINUTE", default=30)
+RATE_LIMIT_READ_PER_MINUTE = env.int("RATE_LIMIT_READ_PER_MINUTE", default=120)
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -69,6 +81,12 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "utils.ratelimit.RateThrottle",
+    ],
+    # Use the real client IP for anonymous rate limits, not X-Forwarded-For,
+    # which anyone can fake. Behind a proxy, set this to the number of proxies.
+    "NUM_PROXIES": 0,
     "DEFAULT_PAGINATION_CLASS": "utils.pagination.StandardPagination",
     "EXCEPTION_HANDLER": "utils.errors.exception_handler",
 }
