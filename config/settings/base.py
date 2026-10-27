@@ -39,6 +39,7 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "accounts",
     "quotas",
+    "utils",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -51,6 +52,8 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("JWT_REFRESH_DAYS", default=1)),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+IDEMPOTENCY_KEY_TTL_HOURS = env.int("IDEMPOTENCY_KEY_TTL_HOURS", default=24)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

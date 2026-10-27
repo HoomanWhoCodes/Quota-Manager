@@ -13,6 +13,7 @@ from quotas.serializers import (
     QuotaRequestSerializer,
     QuotaSummarySerializer,
 )
+from utils.idempotency import idempotent
 
 
 class QuotaRequestListCreateView(generics.ListCreateAPIView):
@@ -24,6 +25,7 @@ class QuotaRequestListCreateView(generics.ListCreateAPIView):
         filters.is_valid(raise_exception=True)
         return services.list_requests(user=self.request.user, **filters.validated_data)
 
+    @idempotent
     def create(self, request, *args, **kwargs):
         serializer = QuotaRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -40,6 +42,7 @@ class QuotaRequestDetailView(generics.RetrieveAPIView):
 
 
 class DecisionCreateView(APIView):
+    @idempotent
     def post(self, request, pk):
         serializer = DecisionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

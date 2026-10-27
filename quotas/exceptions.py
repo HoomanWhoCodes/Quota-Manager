@@ -1,33 +1,29 @@
-class DomainError(Exception):
-    code = "error"
-    message = "Something went wrong."
-
-    def __init__(self, message=None, details=None):
-        self.message = message or self.message
-        self.details = details
-        super().__init__(self.message)
+from utils.errors import AppError
 
 
-class InvalidInput(DomainError):
-    code = "validation_error"
-    message = "Invalid input."
+class InvalidInput(AppError):
+    pass
 
 
-class NotFound(DomainError):
-    code = "not_found"
-    message = "Not found."
-
-
-class Forbidden(DomainError):
+class Forbidden(AppError):
     code = "forbidden"
     message = "You are not allowed to do this."
+    status = 403
 
 
-class InvalidState(DomainError):
+class NotFound(AppError):
+    code = "not_found"
+    message = "Not found."
+    status = 404
+
+
+class InvalidState(AppError):
     code = "invalid_state"
     message = "This action is not allowed in the current state."
+    status = 409
 
 
-class QuotaExceeded(DomainError):
+class QuotaExceeded(AppError):
     code = "quota_exceeded"
     message = "Not enough quota left for this request."
+    status = 409
