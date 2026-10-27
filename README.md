@@ -1,137 +1,127 @@
 # Quota Manager
 
-A backend service for employee request quotas. Each employee gets 480 minutes per period.
-A request needs approval from both the team manager and HR. Minutes are taken from the
-quota only when the second approval succeeds.
+Backend for employee request quotas. Every employee has 480 minutes per period. A request
+needs two approvals, one from the team manager and one from HR. The minutes are taken from
+the quota when the second approval goes through. One rejection ends the request.
 
-Built with Django + Django REST Framework, PostgreSQL and Redis.
-
-- [Versions](#versions)
-- [Setup](#setup)
-- [Authentication](#authentication)
-- [API](#api)
-- [Error contract](#error-contract)
-- [Invariants and where they are enforced](#invariants-and-where-they-are-enforced)
-- [Required decisions](#required-decisions)
-- [Tests](#tests)
-- [Assumptions](#assumptions)
-- [Limitations and what I would do next](#limitations-and-what-i-would-do-next)
+Django + Django REST Framework, PostgreSQL and Redis.
 
 ## Versions
 
-| Tool | Version |
-|---|---|
-| Python | 3.13.7 |
-| uv | 0.12.17 |
-| Django | 5.2.18 |
-| Django REST Framework | 3.18.3 |
-| djangorestframework-simplejwt | 5.5.1 |
-| django-environ | 0.14.0 |
-| psycopg | 3.3.6 |
-| redis (Python client) | 8.1.0 |
-| pytest | 9.1.1 |
-| pytest-django | 4.14.0 |
-| PostgreSQL | 17 (`postgres:17` image, tested on 17.10) |
-| Redis | 8 (`redis:8` image, tested on 8.10.2) |
+- Python 3.13.7, uv 0.12.17
+- Django 5.2.18, Django REST Framework 3.18.3, djangorestframework-simplejwt 5.5.1
+- django-environ 0.14.0, psycopg 3.3.6, redis (Python client) 8.1.0
+- pytest 9.1.1, pytest-django 4.14.0
+- PostgreSQL 17 (tested on 17.10), Redis 8 (tested on 8.10.2), both from Docker images
 
-## Setup
+## Running it
 
-You need Docker (for PostgreSQL and Redis) and [uv](https://docs.astral.sh/uv/).
+You need Docker and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cp .env.example .env              # all values in it are fake and local-only
-docker compose up -d              # PostgreSQL on port 5433, Redis on port 6380
-uv sync                           # install Python and dependencies
+cp .env.example .env
+docker compose up -d
+uv sync
 uv run python manage.py migrate
-uv run python manage.py seed      # sample period, users and tokens (--reset clears old requests)
+uv run python manage.py seed
 uv run python manage.py runserver
 ```
 
-The ports are 5433 and 6380 so they don't clash with a PostgreSQL or Redis you may already
-run locally. You can change them in `.env`.
-
-If you'd rather use a local PostgreSQL, point `DATABASE_URL` in `.env` at it. Redis is still
-needed for the rate limiter.
+Postgres runs on port 5433 and Redis on 6380, so they don't clash with ones you may already
+have. Everything in `.env.example` is fake and only for local use.
 
 ### Sample data
 
-`seed` creates a period that starts today and lasts 30 days, so it is always open when you
-run the project. Running it again is safe: it reuses the open period. If that period has
-ended, it makes a new one.
+```bash
+uv run python manage.py seed
+```
 
-All passwords and tokens are **fake** and only for local testing.
+This makes a period that starts today and lasts 30 days, so it's always open when you run it,
+plus these users. Running it again is safe. `seed --reset` also deletes all requests, quotas,
+idempotency keys and rate limit counters, if you want to start clean.
 
-| User | Role | Team | Password | Token |
-|---|---|---|---|---|
-| alice | employee | Engineering | password123 | alice-fake-token |
-| bob | employee | Engineering | password123 | bob-fake-token |
-| maria | manager | Engineering | password123 | maria-fake-token |
-| sam | manager | Sales | password123 | sam-fake-token |
-| hana | HR | - | password123 | hana-fake-token |
-| admin | HR, superuser | - | password123 | admin-fake-token |
+The passwords and tokens are fake and only for local testing.
 
-`sam` is there so you can see the 404 for a manager of another team. `admin` is for the
-Django admin at `/admin/`. It has the HR role because every user needs a role, and HR is
-the one that doesn't need a team.
+| User  | Role          | Team        | Password    | Token              |
+| ----- | ------------- | ----------- | ----------- | ------------------ |
+| alice | employee      | Engineering | password123 | `alice-fake-token` |
+| bob   | employee      | Engineering | password123 | `bob-fake-token`   |
+| maria | manager       | Engineering | password123 | `maria-fake-token` |
+| sam   | manager       | Sales       | password123 | `sam-fake-token`   |
+| hana  | hr            | -           | password123 | `hana-fake-token`  |
+| admin | hr, superuser | -           | password123 | `admin-fake-token` |
 
-The command refuses to run when `DEBUG` is off, because the passwords are fake. Use
-`--force` if you really want that.
+sam is there so you can see the `404` a manager of another team gets. admin is for the Django
+admin at `/admin/`. The command refuses to run with `DEBUG` off, because the passwords are
+fake (`--force` overrides that).
 
-### Cleanup job
+Each user has one role: `employee`, `manager` or `hr`. Employees and managers need a team, HR
+doesn't. The database checks this, which is why plain `createsuperuser` fails (it tries to
+make an employee with no team). The admin user is HR for that reason.
 
-Idempotency keys older than `IDEMPOTENCY_KEY_TTL_HOURS` can be deleted with:
+### Cleaning up old idempotency keys
 
 ```bash
 uv run python manage.py purge_expired
 ```
 
-In production this would run from cron. The service is still correct if it never runs,
-because an expired key is also deleted when someone tries to reuse it.
+In production this would be a cron job. It's only cleanup: an expired key is also deleted
+when someone uses it again.
 
-## Authentication
+## Logging in
 
-Two ways to log in. Both are local users, and there is no SSO.
+- JWT: `POST /api/v1/auth/token/` with username and password gives you `access` and
+  `refresh`. Send `Authorization: Bearer <access>`. Access tokens last 15 minutes, refresh
+  tokens 1 day. `POST /api/v1/auth/token/refresh/` gives a new access token.
+- Static token, handy for testing: `Authorization: Token <key>`. `seed` makes one for every
+  user, like `alice-fake-token`.
 
-1. **JWT.** `POST /api/v1/auth/token/` with `{"username": "...", "password": "..."}` returns
-   `access` and `refresh`. Send `Authorization: Bearer <access>`. Access tokens live 15
-   minutes and refresh tokens live 1 day (`JWT_ACCESS_MINUTES`, `JWT_REFRESH_DAYS`). Get a
-   new access token with `POST /api/v1/auth/token/refresh/` and `{"refresh": "..."}`.
-2. **Static token**, for quick testing: `Authorization: Token <token>`. The seed command
-   prints a token for every user.
-
-Every endpoint except login needs authentication. Without it you get `401
-not_authenticated`.
+Everything except login needs one of these, otherwise you get `401`.
 
 ## API
 
-All routes are under `/api/v1/`. Request and response bodies are JSON. Every route ends
-with `/`. Without it you get `404` (there is no redirect, because a redirect would lose the
-body of a POST).
+All routes start with `/api/v1/` and end with `/`. There's no redirect for a missing slash,
+because a redirect would drop the body of a POST.
 
-| Method | Route | Notes |
-|---|---|---|
-| POST | `/requests/` | `period_id`, `minutes` (1–480), `reason`. Needs `Idempotency-Key`. Employees only. Returns `201` with the request in `pending`. |
-| GET | `/requests/` | Filters: `status`, `period_id`. Pagination: `page`, `page_size`. Employees see their own requests, managers see their team's, HR sees all. |
-| GET | `/requests/{id}/` | The request with its decisions. `404` if you can't see it. |
-| POST | `/requests/{id}/decisions/` | `{"decision": "approve" \| "reject"}`. Needs `Idempotency-Key`. Returns your decision and the new request status. |
-| GET | `/quotas/{period_id}/` | Ceiling, consumed and remaining minutes for **the logged-in user**. There is no way to ask for someone else's quota. |
-| GET | `/periods/` | **Extra, not in the task.** Read-only list of periods with an `is_open` flag, so a client can find the open period. |
+- `POST /requests/` with `period_id`, `minutes` (1 to 480) and `reason`. Employees only.
+  Returns `201` and the request as `pending`.
+- `GET /requests/` lists requests. Employees see their own, managers their team's, HR sees
+  all. Filter with `status` and `period_id`, page with `page` and `page_size`.
+- `GET /requests/{id}/` shows one request with its decisions.
+- `POST /requests/{id}/decisions/` with `{"decision": "approve"}` or `"reject"`. Returns the
+  decision and the new status of the request.
+- `GET /quotas/{period_id}/` shows your own ceiling, used and remaining minutes. You can't
+  ask for someone else's.
+- `GET /periods/` lists periods with an `is_open` flag. Not in the task, I added it so a
+  client can find the open period.
 
-### Sample requests
+Both POST endpoints need an `Idempotency-Key` header.
 
-Submit a request as alice:
+### Example
+
+Log in as alice:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/auth/token/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "password123"}'
+```
+
+```json
+{"refresh": "eyJhbGciOi...", "access": "eyJhbGciOi..."}
+```
+
+Submit a request with her access token:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/requests/ \
-  -H "Authorization: Token alice-fake-token" \
+  -H "Authorization: Bearer $ALICE" \
   -H "Idempotency-Key: 6f1c2a9e-3b7d-4e0f-9a51-2c8d4b6e1f70" \
   -H "Content-Type: application/json" \
   -d '{"period_id": 1, "minutes": 120, "reason": "Dentist appointment"}'
 ```
 
-```http
-HTTP/1.1 201 Created
-
+```json
 {
   "id": 15,
   "employee_id": 23,
@@ -145,14 +135,14 @@ HTTP/1.1 201 Created
 }
 ```
 
-Sending the same call again with the same key returns the same body and status, plus the
-header `Idempotent-Replayed: true`. Nothing new is created.
+If you send the exact same call again, you get the same response back with an
+`Idempotent-Replayed: true` header, and nothing new is created.
 
-maria (manager) approves, then hana (HR) approves:
+After maria approves, hana approves too:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/requests/15/decisions/ \
-  -H "Authorization: Token hana-fake-token" \
+  -H "Authorization: Bearer $HANA" \
   -H "Idempotency-Key: 0b5e7c43-8d21-4f6a-b9e2-7a3c1d5f8e94" \
   -H "Content-Type: application/json" \
   -d '{"decision": "approve"}'
@@ -165,350 +155,238 @@ curl -X POST http://127.0.0.1:8000/api/v1/requests/15/decisions/ \
 }
 ```
 
-Check the quota:
+Now alice's quota for the period shows 120 used and 360 left.
 
-```bash
-curl http://127.0.0.1:8000/api/v1/quotas/1/ -H "Authorization: Token alice-fake-token"
-```
+## Errors
+
+Every error looks like this:
 
 ```json
-{"period_id": 1, "ceiling_minutes": 480, "consumed_minutes": 120, "remaining_minutes": 360}
-```
-
-A manager of another team trying to read it:
-
-```http
-HTTP/1.1 404 Not Found
-
 {"error": {"code": "not_found", "message": "Not found.", "details": null}}
 ```
 
-## Error contract
+`details` is only filled for validation errors. Wrong URLs and crashes use the same shape
+(with `DEBUG` on you get Django's debug page instead).
 
-Every error has the same shape:
+| Status | Code                        | When                                                               |
+| ------ | --------------------------- | ------------------------------------------------------------------ |
+| 400    | `validation_error`        | Bad input, unknown or ended period, key longer than 255 characters |
+| 400    | `idempotency_key_missing` | No `Idempotency-Key` header                                      |
+| 401    | `not_authenticated`       | Not logged in, or bad token                                        |
+| 403    | `forbidden`               | Reviewing your own request, or a manager or HR trying to submit    |
+| 404    | `not_found`               | Doesn't exist, or you're not allowed to see it                     |
+| 409    | `invalid_state`           | Your role already decided, or the request is already finished      |
+| 409    | `idempotency_key_reuse`   | Same key with a different body or URL                              |
+| 409    | `quota_exceeded`          | Second approval but not enough minutes left                        |
+| 429    | `rate_limited`            | Too many requests, see `Retry-After`                             |
+| 500    | `server_error`            | A bug                                                              |
 
-```json
-{"error": {"code": "machine_readable_code", "message": "Text for humans.", "details": null}}
-```
+A request you're not allowed to see gives exactly the same 404 as one that doesn't exist, so
+you can't find out whether it's there.
 
-`details` is only filled for validation errors, with the problem for each field.
+## Where each rule is enforced
 
-Errors that happen outside the API views (a wrong URL, a crash) use the same shape too.
-With `DEBUG` on, Django shows its own debug page for those instead, which is what you
-want while developing.
+I tried to put the important rules in the database, so they hold even if the Python code has
+a bug.
 
-| HTTP | Code | When |
-|---|---|---|
-| 400 | `validation_error` | Bad input, unknown or ended period, bad filter, too long `Idempotency-Key` |
-| 400 | `idempotency_key_missing` | `Idempotency-Key` header is missing on a POST that needs it |
-| 401 | `not_authenticated` | No credentials, or a bad or expired token |
-| 403 | `forbidden` | Reviewing your own request, or a manager or HR trying to submit |
-| 404 | `not_found` | The record doesn't exist **or** you can't see it (same body in both cases). Also a wrong URL. |
-| 405 | `method_not_allowed` | Wrong HTTP method |
-| 409 | `invalid_state` | Your role already decided, or the request is already finished |
-| 409 | `idempotency_key_reuse` | Same key sent with a different body or to a different route |
-| 409 | `quota_exceeded` | Second approval, but not enough minutes left |
-| 415 | `unsupported_media_type` | Body is not JSON |
-| 429 | `rate_limited` | Too many requests. Comes with a `Retry-After` header |
-| 500 | `server_error` | A bug. Nothing is stored for idempotency, so a retry is safe |
+- Used minutes never go over 480: a `CHECK` constraint on `Quota`. The service also checks it
+  while holding a lock on the quota row and returns `409 quota_exceeded`, so the constraint is
+  only a safety net.
+- One decision per request and role: a unique constraint on `(request, role)`. The service
+  checks it first and returns `409 invalid_state`.
+- The quota is used only once per request: minutes are added only when a request moves from
+  `pending` to `approved`, and that happens while the request row is locked. They're added in
+  the same transaction as the `approved` event, and the database allows only one final event
+  per request, so a second attempt can't commit.
+- At most one final event per request: a partial unique index on `RequestEvent(request)` for
+  the `approved` and `rejected` types.
+- Also in the database: one quota row per employee and period, minutes between 1 and 480,
+  `decided_at` set exactly when a request is finished, periods ending after they start,
+  employees and managers having a team, and one idempotency key per user.
+- Who can see what is in the service layer (`quotas/services/access.py`). The list, the
+  detail page and decisions all use the same function.
 
-## Invariants and where they are enforced
+The business logic lives in `quotas/services/` and doesn't know about HTTP, so it's safe to
+call from anywhere, not just the API. Some tests call it directly.
 
-"DB" means a constraint in PostgreSQL. It still holds if the Python code has a bug or
-someone writes to the database another way.
+## Decisions
 
-| Invariant | Enforced by |
-|---|---|
-| Consumption never goes over 480 | **DB**: `CHECK (0 <= consumed_minutes <= 480)` on `Quota`. **Domain**: the check happens under a row lock on the quota and returns `409 quota_exceeded` instead of hitting the constraint. |
-| One decision per (request, role) | **DB**: `UNIQUE (request, role)` on `Decision`. **Domain**: checked under the request row lock and returns `409 invalid_state`. |
-| Quota for a request is applied exactly once | **Domain**: minutes are only added on the `pending → approved` change, which happens while holding the request row lock. A second try sees `approved` and gets `409`. **DB**: the minutes are added in the same transaction as the `approved` event, and only one final event can exist per request, so a second application can't commit. |
-| At most one final event per request | **DB**: partial unique index on `RequestEvent(request) WHERE event_type IN ('approved', 'rejected')`. |
-| One quota row per employee and period | **DB**: `UNIQUE (employee, period)`. |
-| Minutes between 1 and 480 | **DB**: `CHECK` on `QuotaRequest`. **API**: serializer validation gives a clear `400`. |
-| `decided_at` is set exactly when a request is finished | **DB**: `CHECK` on `QuotaRequest`. |
-| Period ends after it starts | **DB**: `CHECK (end_at > start_at)`. |
-| Employees and managers have a team, HR may not | **DB**: `CHECK` on `User`. |
-| Who can see and review what | **Domain**: `quotas/services/access.py` (`visible_requests`). Both the API and the decision service use it. |
-| One idempotency key per user | **DB**: `UNIQUE (user, key)` on `IdempotencyKey`. |
+### Clock and the end of a period
 
-The domain logic lives in `quotas/services/` and doesn't depend on HTTP. The views only
-parse input and call services. Tests in `TestServiceWithoutHttp` call the services directly.
+The current time comes from `utils/clock.py` (Django's `timezone.now()`, in UTC), not from the
+database. That gives me one place to freeze time in tests.
 
-## Required decisions
+A period is `[start_at, end_at)`, so you can submit while `now < end_at`. Decisions are still
+allowed after the period ends. Reviewers are sometimes late, and I didn't want requests stuck
+in `pending` forever.
 
-### 1. Clock, and decisions after the period ends
+### The quota row
 
-- **"Now" comes from the application clock**, `utils/clock.py`, which returns Django's
-  `timezone.now()` in UTC. Every place that needs the current time calls it. This gives one
-  place to freeze time in tests, and app servers are expected to use NTP.
-- **A request can be submitted while `now < end_at`.** The period is `[start_at, end_at)`,
-  so at exactly `end_at` it is over. Submitting before `start_at` (a future period) is
-  allowed.
-- **Decisions after `end_at` are allowed.** The period end only stops new requests.
-  Reviewers are often a few days late, and blocking them would leave requests stuck in
-  `pending` forever.
-- Tests: `test_period_end_is_exclusive`, `test_ended_period_returns_400`,
-  `test_decision_after_period_end_is_allowed`, `test_decided_at_comes_from_the_app_clock`.
+It's created when it's first needed, inside the final approval. I insert it with
+`ON CONFLICT DO NOTHING`, then lock it with `SELECT ... FOR UPDATE`. If two approvals do this
+at once, the unique index makes the second one wait and then do nothing, so there's never a
+second row and never a crash. Before the first approval the quota simply shows 0 used.
 
-### 2. Where the quota record comes from
+### Events
 
-The `Quota` row is **created on demand inside the final approval transaction**. A pending
-request doesn't need one. In `_lock_quota`:
+Event types are `submitted`, `decision_recorded`, `approved` and `rejected`. The last two are
+the final events. A rejected request gets one too, so every finished request has exactly one,
+however it ended.
 
-1. `INSERT ... ON CONFLICT DO NOTHING` (Django's `bulk_create(ignore_conflicts=True)`). If
-   two transactions do this at the same time, the unique index makes the second one wait
-   for the first. It then does nothing instead of failing.
-2. `SELECT ... FOR UPDATE` on the row, then check and update `consumed_minutes`.
+### Approve and reject at the same time
 
-So there can't be two rows (unique index) or more than 480 consumed (check constraint plus
-the lock). When there's no row, `GET /quotas/{id}/` shows 0 consumed. The concurrency test
-runs once with the row already there and once without it.
+Every decision locks the request row first, so decisions on one request run one after
+another, in the order they arrive. Either way the request ends up `rejected` with one final
+event and no minutes used:
 
-### 3. Shape of the final event
+- approve first: the approval is saved (still `pending`), then the rejection finishes it. Two
+  decisions, both `200`.
+- reject first: the request is finished, and the approval gets `409 invalid_state`. One
+  decision.
 
-Event types in `RequestEvent`:
+The only difference is whether the approval got in before the request closed. Both orders
+are tested.
 
-| Type | When | Final? |
-|---|---|---|
-| `submitted` | Request created | no |
-| `decision_recorded` | Any successful decision | no |
-| `approved` | Second approval succeeds | **yes** |
-| `rejected` | Any rejection | **yes** |
+### Managers and HR as applicants
 
-**A rejected request also gets a final event**, so every finished request has exactly one,
-whichever way it ended. The partial unique index allows at most one `approved` or
-`rejected` event per request. A successful second approval writes `decision_recorded` and
-then `approved`.
+In this version only employees can submit, and managers or HR get `403`. Otherwise a
+manager's own request would need a manager approval they can't give themselves. The "you
+can't review your own request" rule is still there. If this were needed later, another
+manager (or HR user) would review it.
 
-### 4. Approval and rejection at the same time
+### Idempotency
 
-All decisions on one request lock the request row first (`SELECT ... FOR UPDATE`), so they
-run one after the other. **Whoever gets the lock first goes first.** PostgreSQL queues lock
-waiters in arrival order.
+- A key belongs to one user. The method and URL are part of what's compared, so one key can't
+  be used for two different requests or two different targets.
+- I compare a SHA-256 of the method, the path and the JSON body re-dumped with sorted keys, so
+  key order and spacing don't matter.
+- Keys are kept for 24 hours (`IDEMPOTENCY_KEY_TTL_HOURS`).
+- I save responses with status 200, 201, 403, 404 and 409, since retrying would give the same
+  answer anyway. 400 isn't saved, so the client can fix the body and retry with the same key.
+  5xx isn't saved, so a retry really runs again. 401 and 429 happen before this code runs.
+- The database has a unique constraint on `(user, key)`. I save the key, run the operation
+  and save the response in one transaction. If a second request with the same key arrives
+  while the first is still running, it waits on that unique index, then gets the saved
+  response. If the first one wasn't saved (a 400 for example), the second one just runs.
 
-Both possible orders give a fixed, known result:
+### Rate limiting
 
-| Order | Final status | Decisions | Final events | Responses |
-|---|---|---|---|---|
-| Approve, then reject | `rejected` | 2 | 1 (`rejected`) | both `200`; approve shows `pending` |
-| Reject, then approve | `rejected` | 1 | 1 (`rejected`) | reject `200`, approve `409 invalid_state` |
+- Fixed one-minute window: 30 writes and 120 reads per minute per user, set with
+  `RATE_LIMIT_WRITE_PER_MINUTE` and `RATE_LIMIT_READ_PER_MINUTE`. Over the limit you get `429`
+  with `Retry-After`.
+- The counters live in Redis, so all app processes share them. The key is
+  `ratelimit:{read|write}:user:{id}:{minute}`. `INCR` and `EXPIRE` go to Redis in one
+  transaction, so no hit is lost when several processes count at once. With two server
+  processes and 200 parallel requests, exactly 120 got through.
+- When nobody is logged in (that's only the login endpoint) I count per IP instead, so nobody
+  can try passwords without a limit. `NUM_PROXIES = 0` makes DRF use the real IP and ignore
+  `X-Forwarded-For`, which anyone can fake.
+- I picked a fixed window because it's one cheap Redis call per request and it's easy to
+  tell the user when to come back. The downside is that someone can send up to twice the limit
+  around the edge of a minute. For a limit that's there to stop abuse, I think that's fine.
+- Replays count against the limit. The limiter runs before the view, and a client stuck in a
+  retry loop should be slowed down too.
+- If Redis is down, requests are let through and a warning is logged (fail open). The limiter
+  protects the server, not the data. All the quota rules are in PostgreSQL, so extra requests
+  can't break anything, while failing closed would take the whole API down with Redis.
 
-The final status is always `rejected`, there is always exactly one final event, and no quota
-is used. A first approval can never finish a request, so a rejection always wins. The only
-difference is whether the approval was recorded before the request closed. That depends on
-which call arrived first, not on chance inside the code. Both orders are tested on purpose
-in `TestApproveAndRejectAtOnce`.
+### Locks and isolation
 
-### 5. When a manager or HR is the applicant
+I use PostgreSQL's default isolation, READ COMMITTED, with explicit row locks
+(`SELECT ... FOR UPDATE`). Locks are always taken in the same order: the idempotency key, then
+the request row, then the quota row. Since every transaction follows that order, they can't
+deadlock each other.
 
-**Assumption for this version: managers and HR are not applicants.** Only users with the
-`employee` role can submit (`403 forbidden` otherwise). This avoids the case where a
-manager's own request would need a manager approval they can't give. The "can't review your
-own request → 403" rule is still in the decision service.
+After waiting for a lock, PostgreSQL gives back the latest version of the row, so whoever
+loses the race sees the real state and gets a normal answer (`409 quota_exceeded` or
+`409 invalid_state`), not a 500.
 
-If this is needed later, the simplest fix is that a manager's request is reviewed by another
-manager of the team or by a higher manager, and HR's request by another HR user.
+### Pagination
 
-### 6. Idempotency details
+Page numbers: `?page=2&page_size=50`. The default page size is 20 and the max is 100. Lists
+are sorted newest first by `created_at`, then `id`, so the order is stable even when two
+requests have the same time. I went with page numbers because they're simple and the lists
+are small. For big tables I'd switch to cursor pagination.
 
-Code: `utils/idempotency.py`, model `utils.models.IdempotencyKey`.
+### Notification after approval
 
-- **Scope.** A key belongs to one **user**. The **operation and target** are part of the
-  fingerprint (method + path, for example `/requests/15/decisions/`). So the same key from
-  two users is fine. The same key from one user on another route or another request gives
-  `409 idempotency_key_reuse`.
-- **Fingerprint.** SHA-256 of method, path and the **normalized JSON** body: the body is
-  parsed and dumped again with sorted keys. Key order and whitespace don't change the
-  meaning of the body, so they don't count as a different body.
-- **Retention.** 24 hours (`IDEMPOTENCY_KEY_TTL_HOURS`). After that the key can be used for
-  a new operation. Old keys are deleted when reused, or by `purge_expired`.
-- **Which responses are stored.** Only final answers: `200, 201, 403, 404, 409`. These would
-  be the same on retry. `400` is **not** stored, so the client can fix the body and retry
-  with the same key. `5xx` is not stored either, so a retry after a crash really runs again.
-  `401` and `429` happen before the idempotency code runs, so they are never stored.
-- **Uniqueness in the database.** `UNIQUE (user, key)`. The code inserts the key first and
-  only runs the operation if the insert worked. A duplicate insert fails with
-  `IntegrityError`, and then we return the saved response.
-- **Same key at the same time.** The key row, the operation and the saved response are all
-  in **one transaction**. The second request's insert waits on the unique index until the
-  first commits. Then it gets `IntegrityError` and replays the first response, with
-  `Idempotent-Replayed: true`. If the first one ended with a response we don't store, its
-  row is rolled back and the second one simply runs. Tested in
-  `TestSameIdempotencyKeyAtOnce`.
-- Because the key and the operation commit together, there is never a key without its
-  side effect, or a side effect without its key.
+I didn't build it. I'd use Celery with Redis as the queue, plus a `notified_at` column on
+the request.
 
-### 7. Rate limit algorithm and policy
+**How is the message not lost if sending fails?**
 
-Code: `utils/ratelimit.py`.
+- After the approval commits, `transaction.on_commit` puts a Celery task in the Redis queue.
+  The task sends the message and then sets `notified_at`.
+- If sending fails, Celery retries the task.
+- A Celery task can still be lost if Redis is down or the process dies right after the commit,
+  before the task is queued. So a Celery beat job runs every minute and queues a task for every
+  approved request that still has `notified_at` empty. The approval is saved in the database,
+  so it can always be found and sent later.
 
-- **Algorithm: fixed one-minute window.** A counter per user, per scope (read or write),
-  per minute.
-- **Store: Redis**, shared by all app processes. A counter in process memory is not used.
-- **Key:** `ratelimit:{read|write}:user:{user_id}:{minute_number}`. Calls without a login
-  (the login endpoint itself) use `ip:{client_ip}` instead of the user, so passwords can't be
-  guessed without a limit. `NUM_PROXIES = 0` makes DRF use the real connection IP and ignore
-  `X-Forwarded-For`, which a client could fake.
-- **Counting:** `INCR` and `EXPIRE` (2 minutes, just for cleanup) are sent in one Redis
-  transaction, so it's one round trip and two processes can never lose a hit. I checked
-  this with two server processes and 200 parallel requests: exactly 120 got through and
-  80 got `429`.
-- **Limits:** 30 writes and 120 reads per minute by default (`RATE_LIMIT_WRITE_PER_MINUTE`,
-  `RATE_LIMIT_READ_PER_MINUTE`). Over the limit: `429 rate_limited` with `Retry-After` set
-  to the seconds until the next minute starts.
-- **Why a fixed window.** It costs one atomic Redis call and one small key per user per
-  minute, and it is easy to explain to a user ("try again in N seconds"). The downside: a
-  user can send up to twice the limit around a minute boundary. For limits meant to stop
-  abuse, not to bill anyone, that's fine. A sliding window or token bucket would be smoother
-  but needs a Lua script or more keys.
-- **Replays are counted.** The limiter runs before the view, so every HTTP call counts,
-  including idempotent replays and calls that end in `400`. A replay still costs a request
-  to serve, and a client stuck in a retry loop should be slowed down too.
-- **Fail open.** If Redis is down, the request is let in and a warning is logged. Redis has
-  a 0.5 second timeout, so an outage doesn't make requests slow. The reason: the limiter
-  protects the service, it doesn't protect correctness. All quota rules are enforced by
-  PostgreSQL, so letting extra requests in can't break the data. Failing closed would turn a
-  Redis outage into a full API outage.
-- Tests don't sleep. They freeze the app clock and move it forward (`TestRateLimit`).
+**How is a duplicate prevented if the message is sent twice?**
 
-### 8. Locks, lock order and isolation
+- A task can run twice: a retry after a timeout, or the beat job queueing a request that is
+  already being sent.
+- The task works in one transaction. It locks the request row only if it's not sent yet
+  (`SELECT ... FOR UPDATE SKIP LOCKED` with `notified_at IS NULL`). If it gets no row, another
+  task already sent it or is sending it right now, so it stops.
+- If it gets the row, it sends the message, sets `notified_at` and commits. If sending fails,
+  the transaction rolls back, `notified_at` stays empty, and the message is retried later.
+- One gap is left: the process could die after sending but before the commit. Then the message
+  goes out again. To cover that, we pass the request id as an idempotency key to the email or
+  SMS service, if it supports one, so it ignores the second copy.
 
-- **Isolation level:** PostgreSQL's default, **READ COMMITTED**. Correctness comes from
-  explicit row locks, not from the isolation level.
-- **Locks:** `SELECT ... FOR UPDATE` on the request row, then on the quota row.
-- **Lock order is always the same:**
-  1. The idempotency key row (unique index insert)
-  2. The request row
-  3. The quota row (only on a final approval)
+### Logs
 
-  Every transaction takes locks in this order, so two of them can't wait on each other in a
-  circle. That means no deadlocks in these flows.
-- **After waiting for a lock, the code re-reads the row.** In READ COMMITTED,
-  `SELECT FOR UPDATE` returns the newest committed version. So the loser sees the real
-  status or consumption and gets a normal domain answer: `409 quota_exceeded` or
-  `409 invalid_state`. It never gets a 500.
-- **Serialization failures** can't happen in READ COMMITTED. If a deadlock ever did happen
-  (for example, from code added later), PostgreSQL would cancel one transaction. The client
-  would get a `500`, which is not stored for idempotency, so retrying with the same key is
-  safe.
-
-### 9. Pagination and sort order
-
-- **Page-number (offset) pagination**: `?page=2&page_size=50`. Default page size is 20,
-  maximum is 100. Larger values are cut to 100. A page past the end returns `404`.
-- **Order:** newest first, `created_at DESC, id DESC`. `id` breaks ties, so the order is
-  stable even when two requests have the same timestamp. There is an index on
-  `(created_at DESC, id DESC)`.
-- **Why offset:** it is simple, gives a total `count`, and the data per user is small.
-  Keyset (cursor) pagination would be better for very large tables or deep pages, because it
-  doesn't skip rows and doesn't shift when new rows come in. DRF's `CursorPagination` could
-  replace it without changing anything else.
-
-### 10. Notification after final approval
-
-Not implemented. Here is how I would build it:
-
-- **If the database commits but sending fails, how is the message not lost?** Use a
-  transactional outbox. In the same transaction that approves the request, insert a row
-  into a `notification_outbox` table. The `approved` event row could also be used for this.
-  A background worker reads unsent rows, sends them, and marks them sent. If sending or
-  queueing fails, the row stays unsent and the worker tries again later. The message can't
-  get lost, because it was committed together with the approval. Sending straight from the
-  request, or from `transaction.on_commit`, can lose it if the process dies at the wrong
-  moment.
-- **If delivery is repeated, how is a duplicate effect prevented?** The outbox gives
-  at-least-once delivery, so duplicates are expected. Every message carries the outbox row
-  id (or event id) as its idempotency key. The receiver keeps the ids it has already
-  handled, with a unique constraint, and ignores repeats. If the external service supports
-  idempotency keys, we pass the same id to it.
-
-### Log
-
-Every status change and every successful decision writes a `RequestEvent` row with the
-actor, the time, the event type and the request id. It is written **in the same transaction
-as the change**, so a change can't happen without its log row.
-
-- **Failed attempts (403, 404, 409) are not logged.** So the log can't reveal that a hidden
-  request exists.
-- The `reason` text is only returned by the request list and detail endpoints, to users who
-  are allowed to see that request. It is never written to the operational log or included in
-  decision responses or errors. Tokens are never logged. The only operational log line is a
-  warning when Redis is down, and it contains no user data.
+Every status change and every successful decision writes a `RequestEvent` (who, when, what,
+which request) in the same transaction as the change. Failed attempts (403, 404, 409) aren't
+logged, so the log can't reveal a request someone isn't allowed to see. The `reason` text only
+shows up in the request list and detail for people who can see that request, and tokens are
+never logged.
 
 ## Tests
 
 ```bash
-docker compose up -d     # tests need the real PostgreSQL and Redis
-uv run pytest            # all tests
-uv run pytest quotas/tests/test_concurrency.py -v   # only the concurrency tests
+docker compose up -d
+uv run pytest
 ```
 
-pytest-django creates a separate test database (`test_quota_manager`) in the same
-PostgreSQL. Tests use Redis database 15 and clear it before each test. SQLite is not used
-anywhere.
+The tests run on a separate PostgreSQL test database and a separate Redis database (15),
+never SQLite. They cover the decision table, who can see what, idempotency, rate limiting,
+errors, pagination and the database constraints. No test sleeps: time-based tests move a
+frozen clock instead.
 
-| File | What it covers |
-|---|---|
-| `accounts/tests/test_models.py` | User and team constraints |
-| `accounts/tests/test_auth.py` | JWT and token login, 401 cases |
-| `quotas/tests/test_models.py` | Database constraints behind each invariant |
-| `quotas/tests/test_requests_api.py` | Submitting, validation, visibility per role, 404 vs 403, filters, pagination, ordering |
-| `quotas/tests/test_decisions.py` | Every row of the decision table, the event log, clock rules, services without HTTP, quota summary |
-| `quotas/tests/test_idempotency.py` | Missing key, replay, key reuse, which responses are stored, retention |
-| `quotas/tests/test_ratelimit.py` | 429 threshold, `Retry-After`, window reopening, replays counted, fail open |
-| `quotas/tests/test_concurrency.py` | Real concurrent transactions on PostgreSQL |
-| `quotas/tests/test_seed.py` | Sample data command |
-| `utils/tests/test_errors.py` | JSON errors for wrong URLs, missing trailing slash and crashes |
+### Concurrency tests
 
-### How the concurrency tests create overlap
+`quotas/tests/test_concurrency.py` runs real threads, each with its own database connection,
+for the 300 + 300 case, a double final approval, the same idempotency key twice at once, and
+approve vs reject.
 
-The tests in `test_concurrency.py` use real threads. Each thread has its own PostgreSQL
-connection, and the tests don't sleep and hope:
+To make sure the two transactions really overlap, a third connection first locks the row
+both of them need. Then both requests are sent, and the test waits until PostgreSQL's
+`pg_stat_activity` shows both of them blocked on that lock. Only then is the lock released.
+After that the test checks the responses and the database.
 
-1. A "holder" thread opens a transaction and locks the row both workers will need. In the
-   300 + 300 case that's the quota row, and in the duplicate approval case it's the request
-   row. In the "no quota row yet" case, the holder inserts the quota row and doesn't commit.
-2. Two worker threads send their HTTP requests through the full stack: auth, rate limit,
-   idempotency and service.
-3. The test polls `pg_stat_activity` until PostgreSQL reports **two sessions waiting on a
-   lock**. At that point both transactions are open at the same time, for certain.
-4. The holder commits, and PostgreSQL lets the workers through one at a time.
-5. The test checks both HTTP responses and the database: status, consumed minutes, number
-   of decisions and number of final events.
-
-When the test needs a fixed order (approve-then-reject vs reject-then-approve), it starts
-worker 2 only after worker 1 is already waiting. PostgreSQL queues lock waiters in arrival
-order.
-
-I checked that these tests really catch bugs: removing `select_for_update()` from the quota
-lock makes the 300 + 300 test fail, with both approvals returning 200.
+When I removed `select_for_update()` from the quota code, the 300 + 300 test failed with both
+approvals returning 200, so the tests do catch the bug they're meant to catch.
 
 ## Assumptions
 
-- Managers and HR don't submit requests. See decision 5.
-- Nobody is both a manager and HR. A user has exactly one role.
-- A manager can review any request from their own team. If a team has two managers, the
-  first manager decision counts for the "manager" role.
-- HR has no team.
-- Periods and users are created with `seed` or the Django admin. There is no API for them,
-  as the task says this is out of scope.
-- In the Django admin, requests, decisions, events, quotas and idempotency keys are
-  **view only**. Editing them by hand would skip the locks, the quota check and the event
-  log, so they only change through the API.
-- Requests can't be cancelled by the applicant. This is also out of scope.
+- Only employees submit requests. Nobody is both manager and HR.
+- If a team has two managers, either one can give the manager decision, but only one counts.
+- HR users have no team.
+- Users and periods come from `seed` or the Django admin. There's no API for them (the task
+  leaves that out).
+- In the admin, requests, decisions, quotas, events and idempotency keys are read-only, because
+  changing them by hand would skip the locks and checks.
+- Applicants can't cancel requests (out of scope).
 
-## Limitations and what I would do next
+## What's missing
 
-- **Notification** is designed (decision 10) but not built.
-- **Replays don't keep response headers**, only the status and body. Our endpoints don't
-  return special headers, so nothing is lost today.
-- **The idempotency transaction stays open while the operation runs.** That's fine here,
-  because the operations only touch the database. If a decision ever calls an external
-  service, I would switch to an "in progress" key that is committed first, and return
-  `409` to a duplicate that arrives meanwhile.
-- **A duplicate request with the same key waits with no time limit.** Setting PostgreSQL's
-  `lock_timeout` would cap that.
-- **Fixed window rate limit** allows short bursts at minute boundaries (decision 7).
-- **Offset pagination** gets slow on very deep pages (decision 9).
-- **No automatic deadlock retry.** The fixed lock order should prevent deadlocks. If one
-  happens, the client gets a `500` and can safely retry with the same key.
+- The idempotency transaction stays open while the request is handled. That's fine while
+  everything happens in the database, but if a decision ever called an outside service, I'd
+  save an "in progress" key first and return `409` to a duplicate that arrives in between.
+- A duplicate request with the same key waits with no time limit. A `lock_timeout` would fix
+  that.
+- There's no automatic retry on deadlocks. The fixed lock order should prevent them, and if
+  one happens the client gets a 500 and can safely retry with the same key.
